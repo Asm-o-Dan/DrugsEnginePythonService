@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  python_app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+#    image: 2f1ad2fe202ccaf340c476ba191c4dc293f71c2d1cdfc3f254afce9a35756c7c
+    ports: ["8000:8000"]
+    volumes:
+      - .:/pythonProject2
+    networks:
+      - shared_services_default
+  
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://qdrant:6333/readyz" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - shared_services_default  
+
+networks:
+  shared_services_default:
+    external: true
+    
+volumes:
+  qdrant_data:    
