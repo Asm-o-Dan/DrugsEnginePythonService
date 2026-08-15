@@ -1,16 +1,14 @@
-version: '3.8'
-
 services:
-  python_app:
-    build:
-      context: .
-      dockerfile: Dockerfile
-#    image: 2f1ad2fe202ccaf340c476ba191c4dc293f71c2d1cdfc3f254afce9a35756c7c
-    ports: ["8000:8000"]
+  embedding_service:
+    build: .
+    ports:
+      - "8000:8000"
     volumes:
-      - .:/pythonProject2
-    networks:
-      - shared_services_default
+      - huggingface_cache:/app/model  # только если не копируешь в образ
+    environment:
+      - MODEL_PATH=/app/model
+    restart: unless-stopped
+
   
   qdrant:
     image: qdrant/qdrant:latest
@@ -33,4 +31,5 @@ networks:
     external: true
     
 volumes:
-  qdrant_data:    
+  qdrant_data: 
+  huggingface_cache:  

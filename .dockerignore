@@ -1,0 +1,17 @@
+# Стандартные исключения
+.venv
+.tox
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.vscode
+.idea
+.git
+
+# Дополнительно - большие файлы
+data/
+models/
+*.h5
+*.pt
+*.bin
