@@ -2,10 +2,11 @@ import time
 import pika
 import json
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 from pika.adapters.blocking_connection import BlockingChannel
 from pika.spec import BasicProperties
 
+from app.Classes.classes import SearchQueryMessage
 from app.config import RABBITMQ_HOST, RABBITMQ_QUEUE, RABBITMQ_PREFETCH_COUNT
 
 # Настройка логирования
@@ -58,24 +59,31 @@ class RabbitMQConsumer:
             logger.error(f"Ошибка подключения: {str(e)}", exc_info=True)
             return False
 
-    def _process_message(self, text: str) -> Optional[Dict[str, Any]]:
-        """Обработка текстового сообщения через векторные сервисы"""
+    def _process_message(self, raw_input: Union[str, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Обработка текстового или JSON сообщения через векторные сервисы"""
         try:
-            logger.debug(f"Обработка текста (длина: {len(text)} символов)")
+            search_msg = SearchQueryMessage.from_message(raw_input)
+            logger.debug(f"Обработка поискового запроса: '{search_msg.query}' (limit: {search_msg.limit})")
 
-            # Векторизация текста
-            vector = self.vector_service.vectorize_text(text)
+            # Векторизация чистого текста запроса (без JSON синтаксиса)
+            vector = self.vector_service.vectorize_text(search_msg.query)
             if not vector:
                 raise ValueError("Ошибка векторизации")
 
             # Поиск в Qdrant
-            results = self.qdrant_service.search_vector(vector)
+            results = self.qdrant_service.search_vector(
+                vector=vector,
+                limit=search_msg.limit,
+                score_threshold=search_msg.score_threshold,
+                **search_msg.filters
+            )
             if not results:
-                logger.warning("Не найдено результатов")
+                logger.warning(f"Не найдено результатов для запроса: '{search_msg.query}'")
                 return None
 
             return {
                 "status": "success",
+                "query": search_msg.query,
                 "results": results,
                 "vector_dim": len(vector)
             }
