@@ -1,4 +1,4 @@
-from confluent_kafka import Consumer, KafkaException, Message
+from confluent_kafka import Consumer, KafkaError, KafkaException, Message
 import json
 import logging
 from typing import Optional
