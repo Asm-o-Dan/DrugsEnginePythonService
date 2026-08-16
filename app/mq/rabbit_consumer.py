@@ -1,10 +1,16 @@
 import time
-import pika
 import json
 import logging
 from typing import Optional, Dict, Any, Union
-from pika.adapters.blocking_connection import BlockingChannel
-from pika.spec import BasicProperties
+
+try:
+    import pika
+    from pika.adapters.blocking_connection import BlockingChannel
+    from pika.spec import BasicProperties
+except ImportError:
+    pika = None
+    BlockingChannel = Any
+    BasicProperties = Any
 
 from app.Classes.classes import SearchQueryMessage
 from app.config import RABBITMQ_HOST, RABBITMQ_QUEUE, RABBITMQ_PREFETCH_COUNT
