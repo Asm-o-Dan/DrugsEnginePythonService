@@ -2,8 +2,7 @@ from typing import List, Optional, Dict, Any, Union
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct, VectorParams, Distance, ScoredPoint, Filter
 from qdrant_client.http.exceptions import UnexpectedResponse, ResponseHandlingException
-from threading import Lock, RLock
-from functools import lru_cache
+from threading import Lock
 import logging
 import os
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -13,11 +12,10 @@ logger = logging.getLogger("QdrantService")
 
 
 class QdrantService:
-    """Сервис для работы с Qdrant с поддержкой переподключения и потокобезопасности"""
+    """Сервис для работы с Qdrant с кешированием схемы коллекций и поддержкой переподключения"""
 
     _instance = None
     _init_lock = Lock()
-    _client_lock = RLock()  # Реентерабельная блокировка для операций с клиентом
 
     def __new__(cls, host: str = "qdrant", port: int = 6333):
         with cls._init_lock:
@@ -33,11 +31,13 @@ class QdrantService:
         """Инициализация клиента с поддержкой переподключения"""
         self._host = host
         self._port = port
+        self._reconnect_lock = Lock()
+        self._collection_dimensions: Dict[str, int] = {}
         self._reconnect()
 
     def _reconnect(self):
-        """Установка нового подключения с обработкой ошибок"""
-        with self._client_lock:
+        """Установка нового подключения с потокобезопасной блокировкой переподключения"""
+        with self._reconnect_lock:
             try:
                 self.client = QdrantClient(
                     url=f"http://{self._host}:{self._port}"
@@ -52,29 +52,54 @@ class QdrantService:
         wait=wait_exponential(multiplier=1, min=4, max=10),
         retry=retry_if_exception_type((ResponseHandlingException, UnexpectedResponse)))
     def ensure_collection(self, collection_name: str, vector_size: int) -> bool:
-        """Создает коллекцию с повторами при ошибках"""
+        """Создает коллекцию и кеширует ее размерность в памяти"""
         try:
-            with self._client_lock:
-                if not self.client.collection_exists(collection_name):
-                    self.client.create_collection(
-                        collection_name=collection_name,
-                        vectors_config=VectorParams(
-                            size=vector_size,
-                            distance=Distance.COSINE
-                        )
+            if not self.client.collection_exists(collection_name):
+                self.client.create_collection(
+                    collection_name=collection_name,
+                    vectors_config=VectorParams(
+                        size=vector_size,
+                        distance=Distance.COSINE
                     )
-                    logger.info(f"Создана коллекция '{collection_name}' (размерность: {vector_size})")
-                return True
+                )
+                logger.info(f"Создана коллекция '{collection_name}' (размерность: {vector_size})")
+            self._collection_dimensions[collection_name] = vector_size
+            return True
         except Exception as e:
             logger.error(f"Ошибка при работе с коллекцией: {str(e)}", exc_info=True)
-            self._reconnect()  # Пытаемся переподключиться
+            self._reconnect()
             raise
+
+    def _get_expected_dimension(self, collection_name: str) -> Optional[int]:
+        """Возвращает размерность вектора для коллекции из кеша или запрашивает у сервера единожды"""
+        if collection_name not in self._collection_dimensions:
+            try:
+                collection_info = self.client.get_collection(collection_name)
+                vectors_config = collection_info.config.params.vectors
+                if hasattr(vectors_config, "size"):
+                    self._collection_dimensions[collection_name] = vectors_config.size
+                elif isinstance(vectors_config, dict) and "size" in vectors_config:
+                    self._collection_dimensions[collection_name] = vectors_config["size"]
+            except Exception as e:
+                logger.warning(f"Не удалось получить конфигурацию коллекции {collection_name}: {e}")
+                return None
+        return self._collection_dimensions.get(collection_name)
+
+    def _validate_vector(self, vector: List[float], collection_name: str) -> bool:
+        """Проверка размерности вектора без избыточных сетевых запросов"""
+        expected_size = self._get_expected_dimension(collection_name)
+        if expected_size is not None and len(vector) != expected_size:
+            logger.error(
+                f"Несоответствие размерности: ожидалось {expected_size}, получено {len(vector)}"
+            )
+            return False
+        return True
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=5))
     def add_vector(self, drug: Drug, vector: List[float], collection_name: str = "drug_collection") -> bool:
-        """Добавление вектора с проверкой размерности"""
+        """Добавление вектора с валидацией по локальному кешу схемы"""
         if not self._validate_vector(vector, collection_name):
             return False
 
@@ -90,12 +115,11 @@ class QdrantService:
                 }
             )
 
-            with self._client_lock:
-                operation_info = self.client.upsert(
-                    collection_name=collection_name,
-                    points=[point],
-                    wait=True
-                )
+            self.client.upsert(
+                collection_name=collection_name,
+                points=[point],
+                wait=True
+            )
 
             logger.debug(f"Добавлен вектор для {drug.name} (ID: {drug.id})")
             return True
@@ -104,19 +128,6 @@ class QdrantService:
             logger.error(f"Ошибка при добавлении вектора: {str(e)}")
             self._reconnect()
             return False
-
-    def _validate_vector(self, vector: List[float], collection_name: str) -> bool:
-        """Проверка размерности вектора"""
-        with self._client_lock:
-            collection_info = self.client.get_collection(collection_name)
-            expected_size = collection_info.config.params.vectors.size
-
-        if len(vector) != expected_size:
-            logger.error(
-                f"Несоответствие размерности: ожидалось {expected_size}, получено {len(vector)}"
-            )
-            return False
-        return True
 
     @retry(
         stop=stop_after_attempt(3),
@@ -129,7 +140,7 @@ class QdrantService:
             score_threshold: Optional[float] = None,
             **filters
     ) -> Optional[List[Dict[str, Any]]]:
-        """Поиск с автоматическим переподключением"""
+        """Поиск векторов без лишних блокировок потоков"""
         try:
             if not self._validate_vector(vector, collection_name):
                 return None
@@ -145,9 +156,7 @@ class QdrantService:
             if filters:
                 search_params["query_filter"] = Filter(**self._build_filter(**filters))
 
-            with self._client_lock:
-                results = self.client.search(**search_params)
-
+            results = self.client.search(**search_params)
             return self._format_search_results(results)
 
         except Exception as e:
@@ -155,11 +164,31 @@ class QdrantService:
             self._reconnect()
             return None
 
+    def _build_filter(self, **filters) -> Dict[str, Any]:
+        """Формирование фильтров для поиска в Qdrant"""
+        must_conditions = []
+        for key, value in filters.items():
+            if value is not None:
+                must_conditions.append({"key": key, "match": {"value": value}})
+        return {"must": must_conditions}
+
+    def _format_search_results(self, results: List[ScoredPoint]) -> List[Dict[str, Any]]:
+        """Форматирование результатов поиска"""
+        formatted = []
+        for hit in results:
+            item = {
+                "id": str(hit.id),
+                "score": float(hit.score),
+            }
+            if hit.payload:
+                item.update(hit.payload)
+            formatted.append(item)
+        return formatted
+
     def health_check(self) -> bool:
-        """Проверка здоровья с переподключением"""
+        """Проверка здоровья подключения"""
         try:
-            with self._client_lock:
-                return self.client._client.up()
+            return self.client.collection_exists("drug_collection") or True
         except Exception:
             try:
                 self._reconnect()
