@@ -57,16 +57,22 @@ class VectorizationService:
             raise VectorizationError("Размерность эмбеддингов не определена")
         return self._embedding_dim
 
-    @lru_cache(maxsize=1000)
+    @staticmethod
+    @lru_cache(maxsize=5000)
+    def _encode_text_cached(model: Any, text: str) -> tuple[float, ...]:
+        """Неизменяемый кэш эмбеддингов для предотвращения повреждения памяти"""
+        raw_vector = model.encode(text, show_progress_bar=False)
+        return tuple(float(x) for x in raw_vector)
+
     def vectorize_text(self, text: str) -> List[float]:
         """
-        Векторизация текста с кэшированием
+        Векторизация текста с безопасным кэшированием (возвращает независимую копию)
 
         Args:
-            text: Текст для векторизации (должен быть достаточно уникальным)
+            text: Текст для векторизации
 
         Returns:
-            Векторное представление текста
+            Список float (независимая копия)
 
         Raises:
             VectorizationError: В случае ошибки векторизации
@@ -80,10 +86,12 @@ class VectorizationService:
                 logger.warning(f"Очень длинный текст ({len(text)} символов), возможны проблемы с памятью")
 
             logger.debug(f"Векторизация текста (длина: {len(text)} символов)")
-            vector = self.model.encode(text, show_progress_bar=False).tolist()
+            cached_tuple = self._encode_text_cached(self.model, text)
             logger.debug("Векторизация успешно завершена")
-            return vector
+            return list(cached_tuple)
 
+        except ValueError:
+            raise
         except Exception as e:
             logger.error(
                 f"Ошибка векторизации текста: {str(e)}\n"
@@ -139,10 +147,6 @@ class VectorizationService:
                 raise ValueError("Тексты должны быть непустым списком")
 
             logger.info(f"Пакетная векторизация {len(texts)} текстов")
-
-            # Очистка кэша перед большими пакетами
-            if len(texts) > 50:
-                self.vectorize_text.cache_clear()
 
             vectors = self.model.encode(texts, show_progress_bar=True, batch_size=32).tolist()
             logger.info("Пакетная векторизация успешно завершена")
