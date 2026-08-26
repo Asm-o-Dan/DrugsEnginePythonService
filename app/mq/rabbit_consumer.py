@@ -9,8 +9,12 @@ try:
     from pika.spec import BasicProperties
 except ImportError:
     pika = None
-    BlockingChannel = Any
-    BasicProperties = Any
+    class BlockingChannel:
+        pass
+    class BasicProperties:
+        def __init__(self, **kwargs):
+            for k, v in kwargs.items():
+                setattr(self, k, v)
 
 from app.Classes.classes import SearchQueryMessage
 from app.config import RABBITMQ_HOST, RABBITMQ_QUEUE, RABBITMQ_PREFETCH_COUNT
@@ -110,13 +114,20 @@ class RabbitMQConsumer:
     ) -> None:
         """Callback для обработки входящих сообщений"""
         try:
-            message_id = properties.message_id or method.delivery_tag
+            message_id = getattr(properties, 'message_id', None) or method.delivery_tag
             logger.info(f"Получено сообщение ID: {message_id}")
 
             try:
                 text = body.decode('utf-8')
             except UnicodeDecodeError:
-                logger.error("Неверный формат сообщения")
+                logger.error("Неверный формат сообщения (не UTF-8)")
+                if getattr(properties, 'reply_to', None):
+                    self._send_response(
+                        channel,
+                        properties.reply_to,
+                        getattr(properties, 'correlation_id', None),
+                        {"status": "error", "message": "Invalid UTF-8 encoding"}
+                    )
                 channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
                 return
 
@@ -124,11 +135,11 @@ class RabbitMQConsumer:
             response = self._process_message(text)
 
             # Отправка ответа (если указана очередь для ответа)
-            if properties.reply_to:
+            if getattr(properties, 'reply_to', None):
                 self._send_response(
                     channel,
                     properties.reply_to,
-                    properties.correlation_id,
+                    getattr(properties, 'correlation_id', None),
                     response or {"status": "error", "message": "Processing failed"}
                 )
 
@@ -138,7 +149,15 @@ class RabbitMQConsumer:
 
         except Exception as e:
             logger.critical(f"Критическая ошибка: {str(e)}", exc_info=True)
-            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+            if properties and getattr(properties, 'reply_to', None):
+                self._send_response(
+                    channel,
+                    properties.reply_to,
+                    getattr(properties, 'correlation_id', None),
+                    {"status": "error", "message": f"Internal processing failure: {str(e)}"}
+                )
+            # Отклоняем без повторного зацикливания (requeue=False) для предотвращения poison pill шторма
+            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
     def _send_response(
             self,

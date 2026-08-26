@@ -67,6 +67,33 @@ class TestSearchQueryAndRabbitConsumer(unittest.TestCase):
         self.assertEqual(drug.id, test_id)
         self.assertEqual(drug.name, "Аспирин")
 
+    def test_on_message_callback_success_acks_message(self):
+        channel = MagicMock()
+        method = MagicMock(delivery_tag=42)
+        properties = MagicMock(message_id="msg-1", reply_to="reply_queue", correlation_id="corr-1")
+        body = json.dumps({"query": "Анальгин"}).encode("utf-8")
+
+        self.consumer._on_message_callback(channel, method, properties, body)
+
+        channel.basic_ack.assert_called_once_with(delivery_tag=42)
+        channel.basic_publish.assert_called_once()
+
+    def test_on_message_callback_error_nacks_with_requeue_false(self):
+        channel = MagicMock()
+        method = MagicMock(delivery_tag=99)
+        properties = MagicMock(message_id="msg-fail", reply_to="reply_queue", correlation_id="corr-2")
+        # Simulate processing error
+        self.consumer._process_message = MagicMock(side_effect=RuntimeError("Qdrant unavailable"))
+        body = b"poison pill"
+
+        self.consumer._on_message_callback(channel, method, properties, body)
+
+        # MUST be requeue=False to prevent poison pill loop
+        channel.basic_nack.assert_called_once_with(delivery_tag=99, requeue=False)
+        channel.basic_publish.assert_called_once()
+        sent_body = json.loads(channel.basic_publish.call_args[1]["body"])
+        self.assertEqual(sent_body["status"], "error")
+
 
 if __name__ == '__main__':
     unittest.main()
