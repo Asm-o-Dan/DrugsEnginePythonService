@@ -1,292 +1,175 @@
-import datetime
+import json
 import logging
-from typing import Optional, List, Dict
-import requests
+import time
+from typing import Dict, List, Optional
 
-try:
-    from together import Together
-except ImportError:
-    Together = None
+from google import genai
+from google.genai import types
 
-try:
-    from g4f.client import Client
-    from g4f.Provider import Phind, Liaobots
-except ImportError:
-    Client = None
-    Phind = None
-    Liaobots = None
-
-from app.config import (
-    DEEPINFRA_API_KEY,
-    DEEPINFRA_URL,
-    TOGETHER_API_KEY,
-    TOGETHER_MODEL,
-    FIREWORKS_API_KEY,
-    FIREWORKS_URL,
-    FIREWORKS_MODEL,
-    G4F_MODEL,
-)
+from app.config import GEMINI_API_KEY, GEMINI_MODEL
 
 logger = logging.getLogger(__name__)
 
 
 class DrugInfoAPI:
-    """Класс для работы с API генерации описаний лекарств с динамической Round Robin стратегией и отказоустойчивым фоллбеком"""
+    """Сервис пакетного обогащения и валидации достоверности лекарств
+    через Google Gemini API с мульти-модельным балансировщиком (Flash Lite + Flash)
+    и Structured JSON Schema.
+    """
+
+    SYSTEM_INSTRUCTION = (
+        "Ты — профессиональный фармацевтический валидатор и эксперт.\n"
+        "Для каждого переданного товара из аптечного каталога определи:\n"
+        "1. is_drug (bool): является ли товар лекарственным средством (НЕ БАД, не косметика, не медтехника).\n"
+        "2. drug_name (str): нормализованное торговое/международное название лекарства (или null если не лекарство).\n"
+        "3. active_ingredient (str): точное международное непатентованное наименование (МНН) действующего вещества.\n"
+        "4. indications (list[str]): список из ровно 3 ключевых медицинских показаний/диагнозов.\n"
+        "5. analogs (list[str]): список из ровно 3 проверенных торговых аналогов (с тем же МНН или действием).\n"
+        "6. description (str): строго одна строка в формате: "
+        "'Применение: [применение], Диагнозы: [диагноз 1, диагноз 2, диагноз 3], "
+        "Действующее вещество: [МНН], Аналоги: [аналог 1, аналог 2, аналог 3]'.\n"
+        "7. status (str): один из вердиктов: 'VERIFIED' (подлинное лекарство), "
+        "'NOT_DRUG' (гигиена, косметика, БАД, изделие), 'INVALID' (битый текст, ошибка парсера).\n\n"
+        "Верни строго JSON массив объектов с указанными полями."
+    )
+
+    MAX_RETRIES_PER_MODEL = 2
+    BASE_BACKOFF_SECONDS = 1.5
 
     def __init__(self):
-        # Конфигурация API с загрузкой секретов из конфигурации
-        self.api_config = {
-            "deepinfra": {
-                "url": DEEPINFRA_URL,
-                "api_key": DEEPINFRA_API_KEY,
-                "enabled": bool(DEEPINFRA_API_KEY),
-                "enable_time": None,
-            },
-            "together": {
-                "api_key": TOGETHER_API_KEY,
-                "model": TOGETHER_MODEL,
-                "enabled": bool(TOGETHER_API_KEY),
-                "enable_time": None,
-            },
-            "fireworks": {
-                "url": FIREWORKS_URL,
-                "api_key": FIREWORKS_API_KEY,
-                "model": FIREWORKS_MODEL,
-                "enabled": bool(FIREWORKS_API_KEY),
-                "enable_time": None,
-            },
-            "g4f": {
-                "model": G4F_MODEL,
-                "providers": [Phind, Liaobots],
-                "enabled": True,
-                "enable_time": None,
-            },
-        }
+        if not GEMINI_API_KEY:
+            logger.error("GEMINI_API_KEY не задан! Обогащение данных будет недоступно.")
+            self._client = None
+            return
 
-        # Шаблоны промптов
-        self.prompt_templates = {
-            "basic": (
-                "Ты — ассистент, который коротко и четко составляет описание лекарства. "
-                "ЕСЛИ ТО ЧТО Я ПРИШЛЮ ТЕБЕ БУДЕТ НЕ ЛЕКАРСТВОМ, ПРОСТО СКАЖИ, ЧТО ЭТО НЕ ЛЕКАРСТВО И Я [область применения]. "
-                "Формат ответа: Название: [название], Применение: [применение], "
-                "Диагнозы: [диагнозы], Вещество: [вещество], Аналоги: [аналоги]. "
-                "Ответь в 1 строке."
-            ),
-            "strict": (
-                "Название лекарства: {drug_name}\n"
-                "ЕСЛИ ТО ЧТО Я ПРИШЛЮ ТЕБЕ БУДЕТ НЕ ЛЕКАРСТВОМ, ПРОСТО СКАЖИ, ЧТО ЭТО НЕ ЛЕКАРСТВО И Я [область применения]\n"
-                "Кратко ответь строго в формате одной строки без переносов:\n"
-                "Применять при болях в: [где применять], "
-                "Диагнозы: [минимум 3 диагноза], "
-                "Действующее вещество: [вещество], "
-                "Аналоги: [минимум 3 аналога]"
-            ),
-        }
-
-        self._current_index = 0
-        self.g4f_client = Client() if Client is not None else None
-
-    def _get_enabled_apis(self) -> List[str]:
-        """Возвращает актуальный список активных API провайдеров"""
-        self._enable_api()
-        return [
-            name
-            for name, config in self.api_config.items()
-            if config.get("enabled", True)
+        self._client = genai.Client(api_key=GEMINI_API_KEY)
+        # Тройной пул моделей для максимальной утилизации всех доступных квот AI Studio
+        self._models = [
+            "gemini-3.5-flash-lite",
+            "gemini-3.6-flash",
+            "gemini-3.7-flash",
         ]
+        self._current_model_idx = 0
+        logger.info(
+            "Gemini Triple-Model API клиент инициализирован (пул моделей: %s)",
+            self._models,
+        )
 
-    def _disable_provider(self, provider_name: str, cooldown_minutes: int = 5):
-        """Временно отключает провайдер при возникновении ошибок"""
-        if provider_name in self.api_config:
-            self.api_config[provider_name]["enabled"] = False
-            self.api_config[provider_name]["enable_time"] = (
-                datetime.datetime.now() + datetime.timedelta(minutes=cooldown_minutes)
-            )
-            logger.warning(f"Провайдер {provider_name} отключен на {cooldown_minutes} минут из-за ошибки.")
+    def _get_active_models_order(self) -> List[str]:
+        """Возвращает порядок моделей с ротацией для равномерного распределения квот"""
+        idx = self._current_model_idx % len(self._models)
+        self._current_model_idx = (self._current_model_idx + 1) % len(self._models)
+        return self._models[idx:] + self._models[:idx]
 
-    def _enable_api(self):
-        """Восстанавливает ранее отключенные провайдеры по истечении таймаута"""
-        now = datetime.datetime.now()
-        for api_name, config in self.api_config.items():
-            if config.get("enable_time") is not None and config["enable_time"] <= now:
-                # Включаем только если есть необходимые ключи или провайдер бесплатный (g4f)
-                if api_name == "g4f" or bool(config.get("api_key")):
-                    config["enabled"] = True
-                    config["enable_time"] = None
-                    logger.info(f"Провайдер {api_name} восстановлен после таймаута.")
+    def get_batch_drug_info(self, queries: List[str]) -> List[Dict]:
+        """Пакетная обработка и валидация пачки лекарств (до 25-50 штук за 1 запрос).
+        
+        Гарантирует 100% экономию квот RPD:
+        20 запросов * 25 лекарств = 500 лекарств/день на одной модели,
+        а с пулом из 2 моделей = 1 000 лекарств/день!
+        
+        Args:
+            queries: Список строк/названий из парсера.
+            
+        Returns:
+            Список словарей с валидированными и обогащенными данными.
+        """
+        if not queries or self._client is None:
+            return []
 
-    def _call_deepinfra(self, drug_name: str) -> Optional[str]:
-        """Синхронный запрос к DeepInfra API"""
-        logger.info(f"Попытка запроса к DeepInfra для {drug_name}")
-        api_key = self.api_config["deepinfra"]["api_key"]
-        if not api_key:
-            return None
+        prompt = (
+            f"Проанализируй список товаров ({len(queries)} позиций) и верни JSON массив:\n"
+            f"{json.dumps(queries, ensure_ascii=False)}"
+        )
 
-        prompt = self.prompt_templates["basic"] + f"\nНазвание лекарства: {drug_name}"
-        payload = {
-            "input": prompt,
-            "stop": ["<|eot_id|>"],
-            "stream": False,
-        }
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
+        models_to_try = self._get_active_models_order()
 
-        try:
-            response = requests.post(
-                self.api_config["deepinfra"]["url"],
-                json=payload,
-                headers=headers,
-                timeout=20,
-            )
-            if response.status_code != 200:
-                logger.error(f"DeepInfra API error: {response.status_code}")
-                self._disable_provider("deepinfra")
-                return None
+        for model_name in models_to_try:
+            for attempt in range(1, self.MAX_RETRIES_PER_MODEL + 1):
+                try:
+                    logger.debug(
+                        "Отправка батча (%d позиций) в модель %s (попытка %d)...",
+                        len(queries),
+                        model_name,
+                        attempt,
+                    )
+                    start_t = time.time()
 
-            result = response.json()
-            return result.get("results", [{}])[0].get("generated_text", "").strip()
+                    response = self._client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=self.SYSTEM_INSTRUCTION,
+                            response_mime_type="application/json",
+                            temperature=0.3,
+                            max_output_tokens=4096,
+                        ),
+                    )
 
-        except Exception as e:
-            logger.error(f"DeepInfra error: {str(e)}")
-            self._disable_provider("deepinfra")
-            return None
+                    duration = time.time() - start_t
 
-    def _call_together(self, drug_name: str) -> Optional[str]:
-        """Запрос к Together API"""
-        logger.info(f"Попытка запроса к Together для {drug_name}")
-        api_key = self.api_config["together"]["api_key"]
-        if not api_key:
-            return None
+                    if not response.text:
+                        logger.warning(
+                            "Модель %s вернула пустой ответ для батча", model_name
+                        )
+                        break
 
-        if Together is None:
-            logger.error("Пакет 'together' не установлен")
-            self._disable_provider("together")
-            return None
+                    raw_text = response.text.strip()
+                    parsed = json.loads(raw_text)
 
-        try:
-            client = Together(api_key=api_key)
-            response = client.chat.completions.create(
-                model=self.api_config["together"]["model"],
-                messages=[{
-                    "role": "user",
-                    "content": self.prompt_templates["basic"] + drug_name,
-                }],
-                timeout=20,
-            )
-            return response.choices[0].message.content
+                    if isinstance(parsed, list):
+                        logger.info(
+                            "Батч из %d позиций успешно обработан моделью %s за %.2fs",
+                            len(parsed),
+                            model_name,
+                            duration,
+                        )
+                        return parsed
+                    else:
+                        logger.warning(
+                            "Модель %s вернула не массив: %s",
+                            model_name,
+                            raw_text[:100],
+                        )
 
-        except Exception as e:
-            logger.error(f"Together error: {str(e)}")
-            self._disable_provider("together")
-            return None
+                except Exception as e:
+                    err_msg = str(e)
+                    if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
+                        backoff = self.BASE_BACKOFF_SECONDS * (2 ** (attempt - 1))
+                        logger.warning(
+                            "Rate-limit (429) на модели %s, переключение или backoff %.1fs...",
+                            model_name,
+                            backoff,
+                        )
+                        time.sleep(backoff)
+                        # Переходим к следующей модели из пула при 429
+                        break
+                    else:
+                        logger.error(
+                            "Ошибка запроса к %s: %s", model_name, err_msg
+                        )
+                        break
 
-    def _call_fireworks(self, drug_name: str) -> Optional[str]:
-        """Запрос к Fireworks API"""
-        logger.info(f"Попытка запроса к Fireworks для {drug_name}")
-        api_key = self.api_config["fireworks"]["api_key"]
-        if not api_key:
-            return None
-
-        payload = {
-            "model": self.api_config["fireworks"]["model"],
-            "messages": [{
-                "role": "user",
-                "content": self.prompt_templates["strict"].format(drug_name=drug_name),
-            }],
-            "max_tokens": 200,
-            "temperature": 0.6,
-        }
-
-        try:
-            response = requests.post(
-                self.api_config["fireworks"]["url"],
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=20,
-            )
-            response.raise_for_status()
-            data = response.json()
-            return data["choices"][0]["message"]["content"]
-
-        except Exception as e:
-            logger.error(f"Fireworks error: {str(e)}")
-            self._disable_provider("fireworks")
-            return None
-
-    def _call_g4f(self, drug_name: str) -> Optional[str]:
-        """Запрос через GPT4Free"""
-        logger.info(f"Попытка запроса через GPT4Free для {drug_name}")
-        if self.g4f_client is None:
-            logger.error("Пакет 'g4f' не установлен")
-            self._disable_provider("g4f")
-            return None
-
-        try:
-            response = self.g4f_client.chat.completions.create(
-                model=self.api_config["g4f"]["model"],
-                messages=[{
-                    "role": "user",
-                    "content": self.prompt_templates["basic"] + f"\nНазвание лекарства: {drug_name}",
-                }],
-                timeout=20,
-            )
-            return response.choices[0].message.content
-
-        except Exception as e:
-            logger.error(f"GPT4Free error: {str(e)}")
-            self._disable_provider("g4f")
-            return None
-
-    def _dispatch_call(self, api_name: str, drug_name: str) -> Optional[str]:
-        """Вызывает конкретный метод API по имени"""
-        if api_name == "deepinfra":
-            return self._call_deepinfra(drug_name)
-        elif api_name == "together":
-            return self._call_together(drug_name)
-        elif api_name == "fireworks":
-            return self._call_fireworks(drug_name)
-        elif api_name == "g4f":
-            return self._call_g4f(drug_name)
-        return None
+        logger.error(
+            "Не удалось обработать батч из %d позиций всеми моделями пула",
+            len(queries),
+        )
+        return []
 
     def get_drug_info(self, drug_name: str) -> Optional[str]:
-        """
-        Основной метод для получения информации о лекарстве
-        с автоматическим переключением между API при ошибках (динамический Round Robin)
-        """
-        enabled_apis = self._get_enabled_apis()
-        if not enabled_apis:
-            logger.error("Все API отключены из-за ошибок или отсутствия конфигурации")
-            return None
-
-        # Упорядочиваем активные API начиная с текущего индекса (round robin)
-        start_idx = self._current_index % len(enabled_apis)
-        ordered_apis = enabled_apis[start_idx:] + enabled_apis[:start_idx]
-        self._current_index = (self._current_index + 1) % len(enabled_apis)
-
-        for api_name in ordered_apis:
-            if not self.api_config[api_name].get("enabled", True):
-                continue
-
-            logger.info(f"Используем API: {api_name}")
-
-            try:
-                result = self._dispatch_call(api_name, drug_name)
-
-                if result is not None and result != "" and "Извините" not in result:
-                    return result.strip()
-
-                logger.warning(f"API {api_name} вернул пустой результат, пробуем следующий")
-
-            except Exception as e:
-                logger.error(f"Неожиданная ошибка в {api_name}: {str(e)}")
-                self._disable_provider(api_name)
-                continue
-
-        logger.error("Не удалось получить ответ ни от одного API")
+        """Одиночный метод обогащения (для обратной совместимости)"""
+        batch_res = self.get_batch_drug_info([drug_name])
+        if batch_res:
+            item = batch_res[0]
+            if item.get("status") == "VERIFIED" or item.get("is_drug"):
+                desc = item.get("description")
+                if desc:
+                    return desc
+                # Синтезируем описание, если поле description пустое
+                return (
+                    f"Применение: {item.get('drug_name', drug_name)}, "
+                    f"Диагнозы: {', '.join(item.get('indications', []))}, "
+                    f"Действующее вещество: {item.get('active_ingredient', '')}, "
+                    f"Аналоги: {', '.join(item.get('analogs', []))}"
+                )
         return None

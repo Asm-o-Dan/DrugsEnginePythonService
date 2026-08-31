@@ -2,6 +2,9 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Union
 import uuid
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class Country:
@@ -68,8 +71,8 @@ class SearchQueryMessage:
                     data = json.loads(trimmed)
                     if isinstance(data, dict):
                         return cls.from_dict(data)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Не удалось распарсить поисковое сообщение как JSON: {trimmed[:100]}... Ошибка: {e}")
             return cls(query=trimmed)
         elif isinstance(raw, dict):
             return cls.from_dict(raw)

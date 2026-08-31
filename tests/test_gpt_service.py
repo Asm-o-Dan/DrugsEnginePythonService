@@ -1,60 +1,104 @@
+import json
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 from app.services.gpt_service import DrugInfoAPI
 
 
 class TestDrugInfoAPI(unittest.TestCase):
 
-    def setUp(self):
-        self.api = DrugInfoAPI()
-        # Explicitly configure mock providers for testing
-        self.api.api_config["deepinfra"]["enabled"] = True
-        self.api.api_config["together"]["enabled"] = True
-        self.api.api_config["fireworks"]["enabled"] = True
-        self.api.api_config["g4f"]["enabled"] = True
+    def test_no_api_key_initializes_cleanly(self):
+        """Проверяем корректную инициализацию без заданного GEMINI_API_KEY"""
+        with patch("app.services.gpt_service.GEMINI_API_KEY", None):
+            api = DrugInfoAPI()
+            self.assertIsNone(api._client)
+            self.assertEqual(api.get_batch_drug_info(["Но-Шпа"]), [])
+            self.assertIsNone(api.get_drug_info("Но-Шпа"))
 
-    def test_no_hardcoded_secrets_in_config_defaults(self):
-        """Проверяем, что в репозитории нет захардкоженных токенов"""
-        # When environment variables are empty, api_key in fresh instance should be empty
-        with patch.dict("os.environ", {}, clear=True):
-            fresh_api = DrugInfoAPI()
-            self.assertIn("deepinfra", fresh_api.api_config)
-            self.assertIn("together", fresh_api.api_config)
-            self.assertIn("fireworks", fresh_api.api_config)
+    def test_model_pool_rotation(self):
+        """Проверяем корректную ротацию пула моделей для распределения квот"""
+        with patch("app.services.gpt_service.GEMINI_API_KEY", "test-key"), \
+             patch("google.genai.Client"):
+            api = DrugInfoAPI()
+            self.assertEqual(len(api._models), 3)
+            order1 = api._get_active_models_order()
+            order2 = api._get_active_models_order()
+            self.assertNotEqual(order1[0], order2[0])
 
-    def test_fallback_when_first_provider_fails(self):
-        """Проверяем, что при падении первого провайдера запрос переключается на следующий"""
-        with patch.object(self.api, "_dispatch_call") as mock_dispatch:
-            def side_effect(api_name, drug_name):
-                if api_name == "deepinfra":
-                    raise Exception("DeepInfra connection timeout")
-                elif api_name == "together":
-                    return "Название: Но-Шпа, Применение: спазмолитик"
-                return None
+    def test_get_batch_drug_info_success(self):
+        """Проверяем успешную обработку пакета лекарств через Gemini API"""
+        mock_response_data = [
+            {
+                "is_drug": True,
+                "drug_name": "Но-Шпа",
+                "active_ingredient": "Дротаверин",
+                "indications": ["Спазм гладкой мускулатуры", "Почечная колика", "Спастический колит"],
+                "analogs": ["Дротаверин", "Спазмол", "Спазмонет"],
+                "description": "Применение: Но-Шпа, Диагнозы: Спазм гладкой мускулатуры, Действующее вещество: Дротаверин, Аналоги: Дротаверин, Спазмол, Спазмонет",
+                "status": "VERIFIED"
+            }
+        ]
+        mock_resp = MagicMock()
+        mock_resp.text = json.dumps(mock_response_data)
 
-            mock_dispatch.side_effect = side_effect
+        with patch("app.services.gpt_service.GEMINI_API_KEY", "test-key"), \
+             patch("google.genai.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client.models.generate_content.return_value = mock_resp
+            mock_client_cls.return_value = mock_client
 
-            result = self.api.get_drug_info("Но-Шпа")
-            self.assertEqual(result, "Название: Но-Шпа, Применение: спазмолитик")
-            # DeepInfra should now be disabled
-            self.assertFalse(self.api.api_config["deepinfra"]["enabled"])
-            self.assertIsNotNone(self.api.api_config["deepinfra"]["enable_time"])
+            api = DrugInfoAPI()
+            result = api.get_batch_drug_info(["Но-Шпа"])
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0]["drug_name"], "Но-Шпа")
+            self.assertEqual(result[0]["status"], "VERIFIED")
 
-    def test_all_providers_fail_returns_none(self):
-        """Проверяем возврат None, если все провайдеры вернули ошибку"""
-        with patch.object(self.api, "_dispatch_call", side_effect=Exception("API failure")):
-            result = self.api.get_drug_info("Аспирин")
-            self.assertIsNone(result)
-            for config in self.api.api_config.values():
-                self.assertFalse(config["enabled"])
+    def test_get_drug_info_single_item(self):
+        """Проверяем метод get_drug_info для одного лекарства"""
+        mock_response_data = [
+            {
+                "is_drug": True,
+                "drug_name": "Аспирин",
+                "active_ingredient": "Ацетилсалициловая кислота",
+                "indications": ["Лихорадка", "Головная боль", "Воспаление"],
+                "analogs": ["Ацекардол", "Тромбо АСС", "Кардиомагнил"],
+                "description": "Применение: Аспирин, Диагнозы: Лихорадка, Действующее вещество: Ацетилсалициловая кислота, Аналоги: Ацекардол",
+                "status": "VERIFIED"
+            }
+        ]
+        with patch.object(DrugInfoAPI, "get_batch_drug_info", return_value=mock_response_data):
+            with patch("app.services.gpt_service.GEMINI_API_KEY", "test-key"), \
+                 patch("google.genai.Client"):
+                api = DrugInfoAPI()
+                info = api.get_drug_info("Аспирин")
+                self.assertIsNotNone(info)
+                self.assertIn("Аспирин", info)
 
-    def test_empty_enabled_apis_returns_none(self):
-        """Проверяем возврат None, если изначально нет включенных провайдеров"""
-        for config in self.api.api_config.values():
-            config["enabled"] = False
+    def test_fallback_on_model_error(self):
+        """Проверяем переключение на следующую модель в пуле при ошибке первой модели"""
+        mock_resp = MagicMock()
+        mock_resp.text = json.dumps([{"is_drug": True, "drug_name": "Парацетамол", "status": "VERIFIED"}])
 
-        result = self.api.get_drug_info("Парацетамол")
-        self.assertIsNone(result)
+        with patch("app.services.gpt_service.GEMINI_API_KEY", "test-key"), \
+             patch("google.genai.Client") as mock_client_cls:
+            mock_client = MagicMock()
+            
+            call_count = 0
+            def side_effect(*args, **kwargs):
+                nonlocal call_count
+                call_count += 1
+                if call_count <= 2:
+                    raise Exception("429 RESOURCE_EXHAUSTED: Rate limit exceeded")
+                return mock_resp
+
+            mock_client.models.generate_content.side_effect = side_effect
+            mock_client_cls.return_value = mock_client
+
+            api = DrugInfoAPI()
+            with patch("time.sleep"):  # Не замедляем тесты
+                res = api.get_batch_drug_info(["Парацетамол"])
+                self.assertEqual(len(res), 1)
+                self.assertEqual(res[0]["drug_name"], "Парацетамол")
 
 
 if __name__ == "__main__":

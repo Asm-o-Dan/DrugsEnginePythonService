@@ -188,10 +188,8 @@ class QdrantService:
     def health_check(self) -> bool:
         """Проверка здоровья подключения"""
         try:
-            return self.client.collection_exists("drug_collection") or True
-        except Exception:
-            try:
-                self._reconnect()
-                return True
-            except Exception:
-                return False
+            self.client.get_collections()
+            return True
+        except Exception as e:
+            logger.warning(f"Health check Qdrant не удался: {e}")
+            return False

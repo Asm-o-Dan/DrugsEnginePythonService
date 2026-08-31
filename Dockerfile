@@ -19,6 +19,8 @@ RUN mkdir -p /app/model && \
 FROM python:3.10-slim
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /opt/venv /opt/venv
 COPY --from=builder /app/model /app/model
 COPY . .

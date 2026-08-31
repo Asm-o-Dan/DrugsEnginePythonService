@@ -12,12 +12,14 @@ try:
     from app.config import QDRANT_HOST, QDRANT_PORT
     from app.mq.kafka_consumer import start_kafka_consumer
     from app.mq.rabbit_consumer import start_rabbit_consumer
+    from app.health_server import start_health_server
 except ImportError:
     from services.vectorization_service import VectorizationService
     from services.qdrant_service import QdrantService
     from config import QDRANT_HOST, QDRANT_PORT
     from mq.kafka_consumer import start_kafka_consumer
     from mq.rabbit_consumer import start_rabbit_consumer
+    from health_server import start_health_server
 
 logging.basicConfig(
     level=logging.INFO,
@@ -88,6 +90,9 @@ def supervise_consumers(consumers: list):
 
 def main():
     vector_service, qdrant_service = init_services()
+
+    # Запуск HTTP сервера для health checks (/health) и Prometheus метрик (/metrics)
+    start_health_server(qdrant_service, port=8000)
 
     consumers = [
         (run_kafka_consumer, (vector_service, qdrant_service)),
