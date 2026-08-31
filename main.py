@@ -1,3 +1,4 @@
-from g4f.api import run_api
+from app.main import main
 
-run_api()
+if __name__ == "__main__":
+    main()
