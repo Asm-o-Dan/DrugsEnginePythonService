@@ -11,18 +11,13 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip \
     && pip install --prefer-binary --no-cache-dir -r requirements.txt
 
-# Загрузка и сохранение модели явно
-RUN mkdir -p /app/model && \
-    python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/LaBSE').save('/app/model')"
-
 # Final stage
 FROM python:3.10-slim
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /opt/venv /opt/venv
-COPY --from=builder /app/model /app/model
 COPY . .
 
 RUN chmod +x entrypoint.sh

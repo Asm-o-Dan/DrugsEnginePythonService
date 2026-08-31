@@ -1,8 +1,18 @@
+import os
 import json
 import logging
 from typing import List, Dict, Any, Union, Optional
 from sentence_transformers import SentenceTransformer
 from functools import lru_cache
+
+try:
+    from app.config import MODEL_PATH, MODEL_NAME
+except ImportError:
+    try:
+        from config import MODEL_PATH, MODEL_NAME
+    except ImportError:
+        MODEL_PATH = os.getenv("MODEL_PATH", "/app/model")
+        MODEL_NAME = os.getenv("MODEL_NAME", "sentence-transformers/LaBSE")
 
 # Настройка логирования
 logging.basicConfig(
@@ -23,17 +33,29 @@ class VectorizationService:
     _model = None
     _embedding_dim = None
 
-    def __new__(cls, model_name: str = 'sentence-transformers/LaBSE'):
+    def __new__(cls, model_name: Optional[str] = None):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._initialize(model_name)
         return cls._instance
 
-    def _initialize(self, model_name: str):
-        """Инициализация модели (вызывается только один раз)"""
+    def _initialize(self, model_name: Optional[str] = None):
+        """Инициализация модели с поддержкой кэширования в Docker Volume"""
         try:
-            logger.info(f"Загрузка модели {model_name}...")
-            self._model = SentenceTransformer(model_name)
+            target_model = model_name or MODEL_NAME
+
+            # Проверяем, существует ли сохраненная модель в томе
+            if MODEL_PATH and os.path.exists(MODEL_PATH) and len(os.listdir(MODEL_PATH)) > 0:
+                logger.info(f"Загрузка модели из постоянного тома кэша: {MODEL_PATH}...")
+                self._model = SentenceTransformer(MODEL_PATH)
+            else:
+                logger.info(f"Кэш в томе пуст. Загрузка {target_model} и сохранение в {MODEL_PATH}...")
+                self._model = SentenceTransformer(target_model)
+                if MODEL_PATH:
+                    os.makedirs(MODEL_PATH, exist_ok=True)
+                    self._model.save(MODEL_PATH)
+                    logger.info(f"Модель успешно сохранена в кэш тома: {MODEL_PATH}")
+
             self._embedding_dim = self._model.get_sentence_embedding_dimension()
             logger.info(
                 f"Модель успешно загружена. "
