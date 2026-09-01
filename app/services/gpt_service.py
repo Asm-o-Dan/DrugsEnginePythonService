@@ -48,7 +48,7 @@ class DrugInfoAPI:
             GEMINI_MODEL,
             "gemini-3.5-flash-lite",
             "gemini-3.6-flash",
-            "gemini-2.5-flash",
+            "gemini-3.7-flash",
         ]
         seen = set()
         unique_models = [m for m in models if m and not (m in seen or seen.add(m))]
