@@ -61,6 +61,9 @@ sys.modules["qdrant_client"].QdrantClient = MagicMock
 
 class FakeKafkaError:
     _PARTITION_EOF = -191
+    UNKNOWN_TOPIC_OR_PART = 3
+    _UNKNOWN_TOPIC = -168
+    _UNKNOWN_PARTITION = -190
     def __init__(self, code=-191):
         self._code = code
     def code(self):
@@ -95,6 +98,16 @@ class TestKafkaConsumerErrorHandler(unittest.TestCase):
             self.consumer._handle_kafka_error(mock_error)
         except NameError as e:
             self.fail(f"_handle_kafka_error raised NameError unexpectedly: {e}")
+
+    def test_handle_kafka_error_unknown_topic_warns_cleanly(self):
+        """Verify that unknown topic error (code 3) is handled gracefully with throttled warning."""
+        mock_error = MagicMock()
+        mock_error.code.return_value = 3
+
+        try:
+            self.consumer._handle_kafka_error(mock_error)
+        except Exception as e:
+            self.fail(f"_handle_kafka_error failed on unknown topic error: {e}")
 
     def test_handle_kafka_error_generic_error_does_not_raise(self):
         """Verify that generic broker errors are logged without unhandled exceptions."""

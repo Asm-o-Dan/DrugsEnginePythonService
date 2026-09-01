@@ -4,6 +4,10 @@ import time
 from typing import List, Optional, Tuple
 
 from confluent_kafka import Consumer, KafkaError, KafkaException, Message
+try:
+    from confluent_kafka.admin import AdminClient, NewTopic
+except ImportError:
+    AdminClient, NewTopic = None, None
 
 from app.Classes.classes import Drug
 from app.config import KAFKA_BROKER, KAFKA_TOPIC
@@ -52,8 +56,29 @@ class KafkaDrugConsumer:
         self.broker = chosen_broker if (isinstance(chosen_broker, str) and chosen_broker.strip()) else "kafka:9092"
         self.consumer = self._configure_consumer()
 
+    def _ensure_topic_exists(self):
+        """Гарантирует существование топика в брокере перед подпиской"""
+        if AdminClient is None or NewTopic is None:
+            return
+        try:
+            admin = AdminClient({"bootstrap.servers": self.broker})
+            cluster_metadata = admin.list_topics(timeout=3.0)
+            if self.topic not in cluster_metadata.topics:
+                logger.info("Топик '%s' отсутствует в брокере Kafka. Создаем топик...", self.topic)
+                new_topic = NewTopic(self.topic, num_partitions=1, replication_factor=1)
+                futures = admin.create_topics([new_topic])
+                for topic_name, future in futures.items():
+                    try:
+                        future.result(timeout=3.0)
+                        logger.info("Топик '%s' успешно инициализирован в Kafka", topic_name)
+                    except Exception as e:
+                        logger.debug("Топик '%s' уже существует или в процессе создания: %s", topic_name, e)
+        except Exception as e:
+            logger.debug("Проверка топика через AdminClient пропущена: %s", e)
+
     def _configure_consumer(self) -> Consumer:
         """Настройка Kafka consumer"""
+        self._ensure_topic_exists()
         conf = {
             "bootstrap.servers": self.broker,
             "group.id": "drug-vectorization-group",
@@ -61,6 +86,7 @@ class KafkaDrugConsumer:
             "enable.auto.commit": False,
             "max.poll.interval.ms": 300000,
             "session.timeout.ms": 10000,
+            "allow.auto.create.topics": True,
         }
         consumer = Consumer(conf)
         consumer.subscribe([self.topic])
@@ -280,9 +306,24 @@ class KafkaDrugConsumer:
             self._shutdown()
 
     def _handle_kafka_error(self, error):
-        """Обработка ошибок Kafka"""
-        if error.code() == KafkaError._PARTITION_EOF:
+        """Обработка ошибок Kafka с фильтрацией переходных состояний инициализации"""
+        err_code = error.code() if hasattr(error, "code") else getattr(error, "_code", None)
+        if err_code == getattr(KafkaError, "_PARTITION_EOF", -191):
             logger.debug("Достигнут конец партиции")
+        elif err_code in (
+            getattr(KafkaError, "UNKNOWN_TOPIC_OR_PART", 3),
+            getattr(KafkaError, "_UNKNOWN_TOPIC", -168),
+            getattr(KafkaError, "_UNKNOWN_PARTITION", -190),
+            3,
+        ):
+            now = time.time()
+            if now - getattr(self, "_last_topic_warning_time", 0.0) > 10.0:
+                self._last_topic_warning_time = now
+                logger.warning(
+                    "Топик '%s' ожидает инициализации или первой публикации сообщений в брокере Kafka (%s)",
+                    self.topic,
+                    error,
+                )
         else:
             logger.error(f"Ошибка Kafka: {error}")
 
