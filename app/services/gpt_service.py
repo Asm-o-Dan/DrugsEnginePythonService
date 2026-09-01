@@ -44,11 +44,15 @@ class DrugInfoAPI:
 
         self._client = genai.Client(api_key=GEMINI_API_KEY)
         # Тройной пул моделей для максимальной утилизации всех доступных квот AI Studio
-        self._models = [
+        models = [
+            GEMINI_MODEL,
             "gemini-3.5-flash-lite",
             "gemini-3.6-flash",
-            "gemini-3.7-flash",
+            "gemini-2.5-flash",
         ]
+        seen = set()
+        unique_models = [m for m in models if m and not (m in seen or seen.add(m))]
+        self._models = unique_models[:3]
         self._current_model_idx = 0
         logger.info(
             "Gemini Triple-Model API клиент инициализирован (пул моделей: %s)",

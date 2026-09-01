@@ -8,3 +8,4 @@ sentence_transformers==3.4.1
 fastapi
 tenacity
 python-multipart
+python-dotenv>=1.0.0

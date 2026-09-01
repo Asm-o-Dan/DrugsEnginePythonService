@@ -1,4 +1,21 @@
 import os
+from pathlib import Path
+
+# Load environment variables from .env if available
+try:
+    from dotenv import load_dotenv
+    _app_dir = Path(__file__).resolve().parent
+    _project_dir = _app_dir.parent
+    _root_dir = _project_dir.parent
+
+    # Check and load in order: current dir, project_dir (.env), root_dir (.env)
+    load_dotenv()
+    if (_project_dir / ".env").is_file():
+        load_dotenv(_project_dir / ".env")
+    if (_root_dir / ".env").is_file():
+        load_dotenv(_root_dir / ".env")
+except ImportError:
+    pass
 
 # RabbitMQ
 RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "rabbitmq")
@@ -35,8 +52,16 @@ QDRANT_HOST = os.getenv("QDRANT_HOST", "qdrant")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
 
 # Gemini API Configuration
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+GEMINI_API_KEY = _get_env_str(
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_KEY",
+    default="",
+)
+GEMINI_MODEL = _get_env_str(
+    "GEMINI_MODEL",
+    default="gemini-3.5-flash-lite",
+)
 
 # Model Cache Configuration (Docker Volume)
 MODEL_PATH = os.getenv("MODEL_PATH", "/app/model")

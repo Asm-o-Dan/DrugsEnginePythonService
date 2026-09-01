@@ -24,6 +24,7 @@ def noop_decorator(*args, **kwargs):
 
 tenacity_mod = sys.modules["tenacity"]
 tenacity_mod.retry = noop_decorator
+tenacity_mod.Retrying = MagicMock
 tenacity_mod.stop_after_attempt = MagicMock
 tenacity_mod.wait_exponential = MagicMock
 tenacity_mod.retry_if_exception_type = MagicMock
@@ -169,7 +170,8 @@ class TestKafkaConsumerConfiguration(unittest.TestCase):
 
     def test_start_kafka_consumer_passes_topic_and_broker(self):
         """Verify that start_kafka_consumer properly passes custom topic and broker to KafkaDrugConsumer."""
-        with patch("app.mq.kafka_consumer.KafkaDrugConsumer") as mock_consumer_cls:
+        with patch("app.mq.kafka_consumer.KafkaDrugConsumer") as mock_consumer_cls, \
+             patch("app.mq.kafka_consumer.DrugInfoAPI") as mock_api_cls:
             mock_inst = MagicMock()
             mock_consumer_cls.return_value = mock_inst
             from app.mq.kafka_consumer import start_kafka_consumer
