@@ -40,16 +40,22 @@ class KafkaDrugConsumer:
         vector_service: VectorizationService,
         qdrant_service: QdrantService,
         api_service: DrugInfoAPI,
+        topic: Optional[str] = None,
+        broker: Optional[str] = None,
     ):
         self.vector_service = vector_service
         self.qdrant_service = qdrant_service
         self.api_service = api_service
+        chosen_topic = topic.strip() if (isinstance(topic, str) and topic.strip()) else KAFKA_TOPIC
+        self.topic = chosen_topic if (isinstance(chosen_topic, str) and chosen_topic.strip()) else "drugs"
+        chosen_broker = broker.strip() if (isinstance(broker, str) and broker.strip()) else KAFKA_BROKER
+        self.broker = chosen_broker if (isinstance(chosen_broker, str) and chosen_broker.strip()) else "kafka:9092"
         self.consumer = self._configure_consumer()
 
     def _configure_consumer(self) -> Consumer:
         """Настройка Kafka consumer"""
         conf = {
-            "bootstrap.servers": KAFKA_BROKER,
+            "bootstrap.servers": self.broker,
             "group.id": "drug-vectorization-group",
             "auto.offset.reset": "earliest",
             "enable.auto.commit": False,
@@ -57,14 +63,27 @@ class KafkaDrugConsumer:
             "session.timeout.ms": 10000,
         }
         consumer = Consumer(conf)
-        consumer.subscribe([KAFKA_TOPIC])
+        consumer.subscribe([self.topic])
         return consumer
 
     @staticmethod
     def _parse_message(msg: Message) -> Optional[Drug]:
         """Парсинг и валидация сообщения Kafka"""
         try:
-            data = json.loads(msg.value().decode("utf-8"))
+            if msg is None or msg.value() is None:
+                logger.debug("Получено пустое сообщение Kafka (tombstone)")
+                return None
+
+            raw_val = msg.value()
+            if isinstance(raw_val, bytes):
+                decoded_val = raw_val.decode("utf-8")
+            elif isinstance(raw_val, str):
+                decoded_val = raw_val
+            else:
+                logger.error(f"Неожиданный тип значения сообщения Kafka: {type(raw_val)}")
+                return None
+
+            data = json.loads(decoded_val)
             drug = Drug.from_json(data)
 
             if not drug.name or not drug.id:
@@ -73,8 +92,8 @@ class KafkaDrugConsumer:
             logger.debug(f"Успешно распарсено лекарство из Kafka: {drug.name}")
             return drug
 
-        except json.JSONDecodeError as e:
-            logger.error(f"Ошибка декодирования JSON: {e}")
+        except (UnicodeDecodeError, json.JSONDecodeError) as e:
+            logger.error(f"Ошибка декодирования сообщения JSON: {e}")
         except ValueError as e:
             logger.error(f"Ошибка валидации данных: {e}")
         except Exception as e:
@@ -210,6 +229,7 @@ class KafkaDrugConsumer:
             self.BATCH_SIZE,
             self.BATCH_MAX_WAIT_SECONDS,
         )
+        metrics.set_gauge("drugsengine_python_kafka_consumer_active", 1.0)
 
         current_batch: List[Tuple[Message, Drug]] = []
         batch_start_time = time.time()
@@ -256,6 +276,7 @@ class KafkaDrugConsumer:
         except Exception as e:
             logger.critical(f"Критическая ошибка consumer: {e}", exc_info=True)
         finally:
+            metrics.set_gauge("drugsengine_python_kafka_consumer_active", 0.0)
             self._shutdown()
 
     def _handle_kafka_error(self, error):
@@ -267,14 +288,20 @@ class KafkaDrugConsumer:
 
     def _shutdown(self):
         """Корректное завершение работы"""
+        metrics.set_gauge("drugsengine_python_kafka_consumer_active", 0.0)
         logger.info("Завершение работы consumer")
         self.consumer.close()
 
 
 def start_kafka_consumer(
-    vector_service: VectorizationService, qdrant_service: QdrantService
+    vector_service: VectorizationService,
+    qdrant_service: QdrantService,
+    topic: Optional[str] = None,
+    broker: Optional[str] = None,
 ):
     """Функция для запуска из main.py"""
     api_service = DrugInfoAPI()
-    consumer = KafkaDrugConsumer(vector_service, qdrant_service, api_service)
+    consumer = KafkaDrugConsumer(
+        vector_service, qdrant_service, api_service, topic=topic, broker=broker
+    )
     consumer.run_consumption_loop()

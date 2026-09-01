@@ -193,3 +193,18 @@ class QdrantService:
         except Exception as e:
             logger.warning(f"Health check Qdrant не удался: {e}")
             return False
+
+    def get_vectors_count(self, collection_name: str = "drug_collection") -> int:
+        """Возвращает общее количество векторов/точек в коллекции Qdrant"""
+        try:
+            if not self.client.collection_exists(collection_name):
+                return 0
+            collection_info = self.client.get_collection(collection_name)
+            count = getattr(collection_info, "points_count", None)
+            if count is None:
+                count = getattr(collection_info, "vectors_count", 0)
+            return int(count) if count is not None else 0
+        except Exception as e:
+            logger.warning(f"Не удалось получить количество векторов из Qdrant ({collection_name}): {e}")
+            return 0
+

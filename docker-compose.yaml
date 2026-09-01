@@ -11,6 +11,8 @@ services:
       - MODEL_PATH=/app/model
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.5-flash-lite}
+      - KAFKA_BROKER=${KAFKA_BROKER:-kafka:9092}
+      - KAFKA_TOPIC=${KAFKA_TOPIC:-drugs}
     depends_on:
       - qdrant
     restart: unless-stopped

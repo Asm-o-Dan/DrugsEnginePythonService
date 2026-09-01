@@ -2,6 +2,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import sys
 import os
+from typing import Optional
 
 # Добавляем родительскую директорию в sys.path при прямом запуске
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -40,11 +41,13 @@ def init_services():
 
 
 def run_kafka_consumer(vector_service: VectorizationService,
-                       qdrant_service: QdrantService):
+                       qdrant_service: QdrantService,
+                       topic: Optional[str] = None,
+                       broker: Optional[str] = None):
     """Запуск Kafka консьюмера с пробросом исключений супервизору"""
     try:
         logger.info("Starting Kafka consumer...")
-        start_kafka_consumer(vector_service, qdrant_service)
+        start_kafka_consumer(vector_service, qdrant_service, topic=topic, broker=broker)
     except Exception as e:
         logger.critical(f"Kafka consumer crashed: {e}", exc_info=True)
         raise

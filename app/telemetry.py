@@ -12,6 +12,13 @@ class SimpleMetricsRegistry:
         self._gauges: Dict[str, float] = {}
         self._summary_sums: Dict[str, float] = {}
         self._summary_counts: Dict[str, int] = {}
+        self.init_startup_metrics()
+
+    def init_startup_metrics(self):
+        """Инициализация обязательных стартовых gauge-метрик для предотвращения пустых ответов /metrics"""
+        self.set_gauge("drugsengine_python_uptime_seconds", 0.0)
+        self.set_gauge("drugsengine_python_qdrant_vectors_total", 0.0)
+        self.set_gauge("drugsengine_python_kafka_consumer_active", 0.0)
 
     def inc_counter(self, name: str, value: float = 1.0, labels: Optional[Dict[str, str]] = None):
         key = self._format_key(name, labels)
