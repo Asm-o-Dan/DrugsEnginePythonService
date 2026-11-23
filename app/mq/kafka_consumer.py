@@ -1,4 +1,4 @@
-from confluent_kafka import Consumer, KafkaException, Message
+from confluent_kafka import Consumer, KafkaError, KafkaException, Message
 import json
 import logging
 from typing import Optional
@@ -9,15 +9,6 @@ from app.services.qdrant_service import QdrantService
 from app.services.vectorization_service import VectorizationService
 from app.services.gpt_service import DrugInfoAPI
 
-# Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(name)s - [%(filename)s:%(lineno)d] - %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("kafka_consumer.log")
-    ]
-)
 logger = logging.getLogger("KafkaConsumer")
 
 
@@ -83,8 +74,8 @@ class KafkaDrugConsumer:
             if not vector:
                 logger.error(f"Ошибка векторизации для {drug.name}")
                 return False
-            print(drug_info)
             drug.description = drug_info
+            drug.description_source = "generated"
             # Сохранение в векторной БД
             if not self.qdrant_service.add_vector(drug, vector):
                 logger.error(f"Ошибка сохранения вектора для {drug.name}")

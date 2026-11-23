@@ -1,18 +1,10 @@
 import json
+import os
 import logging
 from typing import List, Dict, Any, Union, Optional
 from sentence_transformers import SentenceTransformer
 from functools import lru_cache
 
-# Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(name)s - [%(filename)s:%(lineno)d] - %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("vectorization_service.log")
-    ]
-)
 logger = logging.getLogger("VectorizationService")
 
 
@@ -23,7 +15,7 @@ class VectorizationService:
     _model = None
     _embedding_dim = None
 
-    def __new__(cls, model_name: str = 'sentence-transformers/LaBSE'):
+    def __new__(cls, model_name: str = os.getenv('MODEL_PATH', 'sentence-transformers/LaBSE')):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._initialize(model_name)

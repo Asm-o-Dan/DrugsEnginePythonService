@@ -1,35 +1,37 @@
+# Векторный поиск DrugsEngine: Python-сервис (HTTP API + Kafka consumer) и Qdrant.
+# Kafka поднимается отдельно в сети shared_services_default; .NET-бэкенд ходит сюда по http://embedding_service:8000.
 services:
   embedding_service:
     build: .
-    ports:
-      - "8000:8000"
-    volumes:
-      - huggingface_cache:/app/model  # только если не копируешь в образ
+    depends_on:
+      - qdrant
     environment:
-      - MODEL_PATH=/app/model
+      MODEL_PATH: /app/model
+      QDRANT_HOST: qdrant
+      KAFKA_BROKER: kafka:9092
+      # Ключи LLM для описаний препаратов — только через .env, не в репозитории
+      DEEPINFRA_API_KEY: ${DEEPINFRA_API_KEY:-}
+      TOGETHER_API_KEY: ${TOGETHER_API_KEY:-}
+      FIREWORKS_API_KEY: ${FIREWORKS_API_KEY:-}
+    ports:
+      - "127.0.0.1:8000:8000"   # только локально; наружу API не публикуется
     restart: unless-stopped
+    networks:
+      - shared_services_default
 
-  
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.13.4
     container_name: qdrant
     ports:
-      - "6333:6333"
-      - "6334:6334"
+      - "127.0.0.1:6333:6333"
     volumes:
       - qdrant_data:/qdrant/storage
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://qdrant:6333/readyz" ]
-      interval: 10s
-      timeout: 5s
-      retries: 3
     networks:
-      - shared_services_default  
+      - shared_services_default
 
 networks:
   shared_services_default:
     external: true
-    
+
 volumes:
-  qdrant_data: 
-  huggingface_cache:  
+  qdrant_data:

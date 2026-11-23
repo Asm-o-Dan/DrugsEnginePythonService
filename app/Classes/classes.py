@@ -23,14 +23,23 @@ class Drug:
     drug_items: List[DrugItem] = field(default_factory=list)
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
+    description: str = ""
+    description_source: str = "generated"
+
     @classmethod
     def from_json(cls, data: dict):
+        # Id обязателен: точка в Qdrant должна иметь тот же идентификатор, что и препарат в PostgreSQL,
+        # иначе .NET-бэкенд не сможет связать результаты поиска с каталогом.
+        drug_id = data.get('Id')
+        if not drug_id:
+            raise ValueError("В сообщении нет Id препарата")
         return cls(
             name=data.get('Name'),
             manufacturer=data.get('Manufacturer'),
             country_code_id=data.get('CountryCodeId'),
             country=None,
-            drug_items= []
+            drug_items=[],
+            id=str(uuid.UUID(str(drug_id))),
         )
 
     def to_json(self):

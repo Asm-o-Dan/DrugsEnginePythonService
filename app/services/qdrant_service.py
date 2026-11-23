@@ -1,6 +1,6 @@
 from typing import List, Optional, Dict, Any, Union
 from qdrant_client import QdrantClient
-from qdrant_client.models import PointStruct, VectorParams, Distance, ScoredPoint, Filter
+from qdrant_client.models import PointStruct, VectorParams, Distance, ScoredPoint, Filter, FieldCondition, MatchValue
 from qdrant_client.http.exceptions import UnexpectedResponse, ResponseHandlingException
 from threading import Lock, RLock
 from functools import lru_cache
@@ -86,6 +86,8 @@ class QdrantService:
                     "name": drug.name,
                     "id": drug.id,
                     "description": getattr(drug, "description", ""),
+                    # описание получено от LLM — веб-клиент помечает его как автоматическое
+                    "description_source": getattr(drug, "description_source", "generated"),
                     "category": getattr(drug, "category", "")
                 }
             )
@@ -166,3 +168,54 @@ class QdrantService:
                 return True
             except Exception:
                 return False
+
+    @staticmethod
+    def _format_search_results(results) -> List[Dict[str, Any]]:
+        """ScoredPoint → простой словарь для API и RPC."""
+        return [
+            {"id": str(point.id), "score": float(point.score), "payload": point.payload or {}}
+            for point in results
+        ]
+
+    @staticmethod
+    def _build_filter(**filters) -> Dict[str, Any]:
+        """Фильтр по точному совпадению полей payload: field=value."""
+        return {
+            "must": [
+                FieldCondition(key=key, match=MatchValue(value=value))
+                for key, value in filters.items()
+            ]
+        }
+
+    def get_point(self, point_id: str, with_vector: bool = False,
+                  collection_name: str = "drug_collection") -> Optional[Dict[str, Any]]:
+        """Точка по id или None, если её нет в коллекции."""
+        with self._client_lock:
+            points = self.client.retrieve(
+                collection_name=collection_name,
+                ids=[point_id],
+                with_payload=True,
+                with_vectors=with_vector,
+            )
+        if not points:
+            return None
+        point = points[0]
+        return {"id": str(point.id), "payload": point.payload or {}, "vector": point.vector if with_vector else None}
+
+    def similar(self, point_id: str, limit: int = 6,
+                collection_name: str = "drug_collection") -> Optional[List[Dict[str, Any]]]:
+        """
+        Ближайшие соседи точки по её же вектору (сама точка исключается).
+        None — точки нет в коллекции.
+        """
+        point = self.get_point(point_id, with_vector=True, collection_name=collection_name)
+        if point is None or not point["vector"]:
+            return None
+        with self._client_lock:
+            results = self.client.search(
+                collection_name=collection_name,
+                query_vector=point["vector"],
+                limit=limit + 1,
+                with_payload=False,
+            )
+        return [r for r in self._format_search_results(results) if r["id"] != str(point_id)][:limit]

@@ -8,15 +8,6 @@ from pika.spec import BasicProperties
 
 from app.config import RABBITMQ_HOST, RABBITMQ_QUEUE, RABBITMQ_PREFETCH_COUNT
 
-# Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(name)s - [%(filename)s:%(lineno)d] - %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("rabbitmq_consumer.log")
-    ]
-)
 logger = logging.getLogger("RabbitMQConsumer")
 
 

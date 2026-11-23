@@ -1,17 +1,11 @@
 import datetime
+import os
 import logging
 from together import Together
 import requests
 from typing import Optional, List, Dict
 import itertools
-from g4f.client import Client
-from g4f.Provider import RetryProvider, Phind, Liaobots
 
-# Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
 logger = logging.getLogger(__name__)
 
 
@@ -19,37 +13,30 @@ class DrugInfoAPI:
     """Класс для работы с API генерации описаний лекарств с Round Robin стратегией"""
 
     def __init__(self):
-        # Конфигурация API
+        # Ключи берутся только из переменных окружения. Провайдер без ключа отключён.
         self.api_config = {
             "deepinfra": {
                 "url": "https://api.deepinfra.com/v1/inference/deepseek-ai/DeepSeek-V3",
-                "headers": {
-                    "Authorization": "Bearer 6hxoDsvx7Kh5sMI5XZiV2n4Y11Gl3mt1",
-                    "Content-Type": "application/json"
-                },
-                "enabled": True,
-                "enable_time":None
+                "api_key": os.getenv("DEEPINFRA_API_KEY"),
+                "enable_time": None,
             },
             "together": {
-                "api_key": "40e343a9294ac61cf9b957ecbfcc78e728f413230f626e157e43bea3458fb360",
-                "model": "deepseek-ai/DeepSeek-V3",
-                "enabled": True,
-                "enable_time": None
+                "api_key": os.getenv("TOGETHER_API_KEY"),
+                "model": os.getenv("TOGETHER_MODEL", "deepseek-ai/DeepSeek-V3"),
+                "enable_time": None,
             },
             "fireworks": {
                 "url": "https://api.fireworks.ai/inference/v1/chat/completions",
-                "api_key": "fw_3ZLGuZa7QTR7LnJKiM2XfJ73",
-                "model": "accounts/fireworks/models/llama-v3p1-8b-instruct",
-                "enabled": True,
-                "enable_time": None
+                "api_key": os.getenv("FIREWORKS_API_KEY"),
+                "model": os.getenv("FIREWORKS_MODEL", "accounts/fireworks/models/llama-v3p1-8b-instruct"),
+                "enable_time": None,
             },
-            "g4f": {
-                "model": "gpt-4",
-                "providers": [Phind, Liaobots],
-                "enabled": True,
-                "enable_time": None
-            }
         }
+        for name, config in self.api_config.items():
+            config["enabled"] = bool(config["api_key"])
+        if not any(c["enabled"] for c in self.api_config.values()):
+            logger.warning("Не задан ни один ключ LLM (DEEPINFRA_API_KEY / TOGETHER_API_KEY / FIREWORKS_API_KEY): "
+                           "описания препаратов генерироваться не будут")
 
         # Шаблоны промптов
         self.prompt_templates = {
@@ -71,11 +58,8 @@ class DrugInfoAPI:
             )
         }
 
-        # Итератор для Round Robin
-        self.api_cycle = itertools.cycle(self._get_enabled_apis())
-
-        # Клиент для g4f
-        self.g4f_client = Client()
+        # Итератор для Round Robin по всем провайдерам с ключами
+        self.api_cycle = itertools.cycle([n for n, c in self.api_config.items() if c["api_key"]] or ["none"])
 
     def _get_enabled_apis(self) -> List[str]:
         """Возвращает список включенных API"""
@@ -96,7 +80,10 @@ class DrugInfoAPI:
             response = requests.post(
                 self.api_config["deepinfra"]["url"],
                 json=payload,
-                headers=self.api_config["deepinfra"]["headers"],
+                headers={
+                    "Authorization": f"Bearer {self.api_config['deepinfra']['api_key']}",
+                    "Content-Type": "application/json",
+                },
                 timeout=20
             )
 
@@ -169,31 +156,10 @@ class DrugInfoAPI:
             self.api_config["fireworks"]["enable_time"] = datetime.datetime.now() + datetime.timedelta(minutes=5)
             return None
 
-    def _call_g4f(self, drug_name: str) -> Optional[str]:
-        """Запрос через GPT4Free"""
-        logger.info(f"Попытка запроса через GPT4Free для {drug_name}")
-
-        try:
-            response = self.g4f_client.chat.completions.create(
-                model=self.api_config["g4f"]["model"],
-                messages=[{
-                    "role": "user",
-                    "content": self.prompt_templates["basic"] + f"\nНазвание лекарства: {drug_name}"
-                }],
-                timeout=20
-            )
-            return response.choices[0].message.content
-
-        except Exception as e:
-            logger.error(f"GPT4Free error: {str(e)}")
-            self.api_config["g4f"]["enabled"] = False
-            self.api_config["g4f"]["enable_time"] = datetime.datetime.now() + datetime.timedelta(minutes=5)
-            return None
-
     def _enable_api(self):
         api_names = [name for name, config in self.api_config.items()]
         for api_name in api_names:
-            if self.api_config[api_name]["enable_time"] is not None:
+            if self.api_config[api_name]["api_key"] and self.api_config[api_name]["enable_time"] is not None:
                 if self.api_config[api_name]["enable_time"] <= datetime.datetime.now():
                     self.api_config[api_name]["enabled"] = True
                     self.api_config[api_name]["enable_time"] = None
@@ -214,7 +180,7 @@ class DrugInfoAPI:
         for _ in range(len(enabled_apis)):
             api_name = next(self.api_cycle)
 
-            if not self.api_config[api_name]["enabled"]:
+            if api_name not in self.api_config or not self.api_config[api_name]["enabled"]:
                 continue
 
             logger.info(f"Используем API: {api_name}")
@@ -226,8 +192,6 @@ class DrugInfoAPI:
                     result = self._call_together(drug_name)
                 elif api_name == "fireworks":
                     result = self._call_fireworks(drug_name)
-                elif api_name == "g4f":
-                    result = self._call_g4f(drug_name)
                 else:
                     continue
 
