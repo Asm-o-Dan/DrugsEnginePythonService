@@ -41,3 +41,7 @@ def test_search_vector_formats_results():
     service._validate_vector = lambda vector, collection: True
     results = service.search_vector([0.0, 1.0], limit=1)
     assert results == [{"id": IDS[2], "score": results[0]["score"], "payload": {"name": "drug-2", "description": "d2"}}]
+
+
+def test_health_check():
+    assert make_service().health_check() is True

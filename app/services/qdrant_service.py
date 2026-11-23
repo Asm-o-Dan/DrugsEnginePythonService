@@ -158,16 +158,14 @@ class QdrantService:
             return None
 
     def health_check(self) -> bool:
-        """Проверка здоровья с переподключением"""
+        """Qdrant отвечает на запрос списка коллекций."""
         try:
             with self._client_lock:
-                return self.client._client.up()
-        except Exception:
-            try:
-                self._reconnect()
-                return True
-            except Exception:
-                return False
+                self.client.get_collections()
+            return True
+        except Exception as e:
+            logger.warning(f"Qdrant недоступен: {e}")
+            return False
 
     @staticmethod
     def _format_search_results(results) -> List[Dict[str, Any]]:
