@@ -39,10 +39,14 @@ class QdrantService:
         """Установка нового подключения с обработкой ошибок"""
         with self._client_lock:
             try:
-                self.client = QdrantClient(
-                    url=f"http://{self._host}:{self._port}"
-                )
-                logger.info(f"Подключено к Qdrant {self._host}:{self._port}")
+                path = os.getenv("QDRANT_PATH")
+                if path:
+                    # Встроенный режим (локальная разработка без сервера Qdrant): данные в каталоге path
+                    self.client = QdrantClient(path=path)
+                    logger.info(f"Qdrant во встроенном режиме: {path}")
+                else:
+                    self.client = QdrantClient(url=f"http://{self._host}:{self._port}")
+                    logger.info(f"Подключено к Qdrant {self._host}:{self._port}")
             except Exception as e:
                 logger.critical(f"Ошибка подключения к Qdrant: {str(e)}", exc_info=True)
                 raise
@@ -55,6 +59,14 @@ class QdrantService:
         """Создает коллекцию с повторами при ошибках"""
         try:
             with self._client_lock:
+                if self.client.collection_exists(collection_name):
+                    current = self.client.get_collection(collection_name).config.params.vectors.size
+                    if current != vector_size:
+                        # Сменили модель эмбеддингов: старые векторы несовместимы. Коллекция пересоздаётся,
+                        # каталог нужно переопубликовать (в .NET: Kafka__PublishAllOnStartup=true).
+                        logger.warning(f"Размерность коллекции '{collection_name}' {current} ≠ {vector_size} "
+                                       f"у модели — пересоздаём коллекцию, требуется переиндексация")
+                        self.client.delete_collection(collection_name)
                 if not self.client.collection_exists(collection_name):
                     self.client.create_collection(
                         collection_name=collection_name,
@@ -85,9 +97,11 @@ class QdrantService:
                 payload={
                     "name": drug.name,
                     "id": drug.id,
-                    "description": getattr(drug, "description", ""),
-                    # описание получено от LLM — веб-клиент помечает его как автоматическое
-                    "description_source": getattr(drug, "description_source", "generated"),
+                    "description": getattr(drug, "description", None),
+                    # "generated" — описание от LLM, веб-клиент помечает его как автоматическое
+                    "description_source": getattr(drug, "description_source", None),
+                    "form": getattr(drug, "form", None),
+                    "active_ingredient": getattr(drug, "active_ingredient", None),
                     "category": getattr(drug, "category", "")
                 }
             )

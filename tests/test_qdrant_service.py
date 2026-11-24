@@ -45,3 +45,10 @@ def test_search_vector_formats_results():
 
 def test_health_check():
     assert make_service().health_check() is True
+
+
+def test_ensure_collection_recreates_on_dimension_change():
+    service = make_service()
+    service.ensure_collection("drug_collection", 3)
+    assert service.client.get_collection("drug_collection").config.params.vectors.size == 3
+    assert service.client.count("drug_collection").count == 0

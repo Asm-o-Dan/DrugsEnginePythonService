@@ -11,7 +11,7 @@ class FakeVectorizer:
     def __init__(self):
         self.calls = []
 
-    def vectorize_text(self, text):
+    def vectorize_query(self, text):
         self.calls.append(text)
         return [0.1, 0.2]
 

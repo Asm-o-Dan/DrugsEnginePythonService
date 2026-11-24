@@ -61,27 +61,30 @@ class KafkaDrugConsumer:
         return None
 
     def _process_single_drug(self, drug: Drug) -> bool:
-        """Полный цикл обработки одного лекарства"""
+        """
+        Индексация одного препарата. Описание от LLM — необязательное обогащение:
+        без ключей или при сбое провайдера препарат всё равно индексируется по названию,
+        действующему веществу и форме, иначе поиск по смыслу был бы пуст.
+        """
         try:
-            # Получение дополнительной информации через API
-            drug_info = self.api_service.get_drug_info(drug.name)
-            if not drug_info or drug_info is None:
-                logger.warning(f"Не удалось получить информацию для {drug.name}")
-                return False
+            if self.api_service.configured:
+                drug_info = self.api_service.get_drug_info(drug.name)
+                if drug_info:
+                    drug.description = drug_info
+                    drug.description_source = "generated"
+                else:
+                    logger.warning(f"Описание для {drug.name} не получено — индексируем без него")
 
-            # Векторизация данных
-            vector = self.vector_service.vectorize_model(drug_info)
+            vector = self.vector_service.vectorize_passage(drug.search_text())
             if not vector:
                 logger.error(f"Ошибка векторизации для {drug.name}")
                 return False
-            drug.description = drug_info
-            drug.description_source = "generated"
-            # Сохранение в векторной БД
+
             if not self.qdrant_service.add_vector(drug, vector):
                 logger.error(f"Ошибка сохранения вектора для {drug.name}")
                 return False
 
-            logger.info(f"Успешно обработано: {drug.name}")
+            logger.debug(f"Проиндексирован: {drug.name}")
             return True
 
         except Exception as e:

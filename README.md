@@ -1,12 +1,12 @@
 # DrugsEnginePythonService
 
-Векторный поиск DrugsEngine: эмбеддинги LaBSE, хранилище Qdrant, HTTP API для .NET-бэкенда
+Векторный поиск DrugsEngine: эмбеддинги multilingual-e5-small, хранилище Qdrant, HTTP API для .NET-бэкенда
 и потребитель Kafka, который индексирует новые препараты.
 
 ## Как это работает
 
 ```
-.NET бэкенд ──Kafka "drugs"──▶ kafka consumer ──LLM-описание──▶ LaBSE ──▶ Qdrant
+.NET бэкенд ──Kafka "drugs"──▶ kafka consumer ──LLM-описание──▶ multilingual-e5-small ──▶ Qdrant
 .NET бэкенд ──HTTP──────────▶ /v1/search, /v1/drugs/{id}/similar, /v1/drugs/{id}
 ```
 
@@ -28,7 +28,17 @@ cp .env.example .env        # ключи LLM (необязательно — б�
 docker compose up -d --build
 ```
 
-Переменные окружения: `QDRANT_HOST`, `QDRANT_PORT`, `KAFKA_BROKER`, `KAFKA_TOPIC`, `KAFKA_ENABLED` (по умолчанию `true`),
+Модель по умолчанию — `intfloat/multilingual-e5-small` (384 измерения, префиксы `query:`/`passage:`):
+на реальном каталоге аптеки она заметно точнее LaBSE («от изжоги» → средства от изжоги, а не пакеты для мусора).
+При смене модели коллекция Qdrant пересоздаётся автоматически — каталог нужно переопубликовать
+(в .NET: `Kafka__PublishAllOnStartup=true`).
+
+Без ключей LLM препараты индексируются по названию, действующему веществу и форме выпуска. Поиск по симптомам,
+которых нет в названии («головная боль», «снизить давление»), работает только с описаниями — для него нужны ключи LLM
+или справочник показаний.
+
+Переменные окружения: `MODEL_NAME` / `MODEL_PATH`, `EMBEDDING_QUERY_PREFIX`, `EMBEDDING_PASSAGE_PREFIX`,
+`QDRANT_HOST`, `QDRANT_PORT`, `QDRANT_PATH` (встроенный Qdrant для локальной разработки), `KAFKA_BROKER`, `KAFKA_TOPIC`, `KAFKA_ENABLED` (по умолчанию `true`),
 `RABBITMQ_ENABLED` (RPC-поиск через RabbitMQ, по умолчанию `false`), `MODEL_PATH`, `PORT`, `LOG_LEVEL`,
 `DEEPINFRA_API_KEY`, `TOGETHER_API_KEY`, `FIREWORKS_API_KEY`.
 

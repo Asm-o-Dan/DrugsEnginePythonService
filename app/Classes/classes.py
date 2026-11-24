@@ -23,8 +23,10 @@ class Drug:
     drug_items: List[DrugItem] = field(default_factory=list)
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
-    description: str = ""
-    description_source: str = "generated"
+    form: str | None = None
+    active_ingredient: str | None = None
+    description: str | None = None
+    description_source: str | None = None
 
     @classmethod
     def from_json(cls, data: dict):
@@ -40,7 +42,20 @@ class Drug:
             country=None,
             drug_items=[],
             id=str(uuid.UUID(str(drug_id))),
+            form=data.get('Form'),
+            active_ingredient=data.get('ActiveIngredient'),
         )
+
+    def search_text(self) -> str:
+        """Текст для эмбеддинга: описание (если есть) плюс то, что известно из каталога."""
+        parts = [self.name]
+        if self.active_ingredient:
+            parts.append(f"Действующее вещество: {self.active_ingredient}")
+        if self.form:
+            parts.append(f"Форма выпуска: {self.form}")
+        if self.description:
+            parts.append(self.description)
+        return ". ".join(p for p in parts if p)
 
     def to_json(self):
         return {

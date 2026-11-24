@@ -13,7 +13,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # Загрузка и сохранение модели явно
 RUN mkdir -p /app/model && \
-    python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/LaBSE').save('/app/model')"
+    python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('intfloat/multilingual-e5-small').save('/app/model')"
 
 # Final stage
 FROM python:3.10-slim

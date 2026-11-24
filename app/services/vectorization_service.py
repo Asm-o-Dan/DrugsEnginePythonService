@@ -8,6 +8,13 @@ from functools import lru_cache
 logger = logging.getLogger("VectorizationService")
 
 
+# multilingual-e5 обучена именно для поиска «запрос → документ» и на каталоге аптеки заметно точнее LaBSE.
+DEFAULT_MODEL = "intfloat/multilingual-e5-small"
+# Модели семейства e5 требуют префиксов; для других моделей задайте пустые значения.
+QUERY_PREFIX = os.getenv("EMBEDDING_QUERY_PREFIX", "query: ")
+PASSAGE_PREFIX = os.getenv("EMBEDDING_PASSAGE_PREFIX", "passage: ")
+
+
 class VectorizationService:
     """Сервис для векторизации текстовых данных с использованием LaBSE модели"""
 
@@ -15,7 +22,7 @@ class VectorizationService:
     _model = None
     _embedding_dim = None
 
-    def __new__(cls, model_name: str = os.getenv('MODEL_PATH', 'sentence-transformers/LaBSE')):
+    def __new__(cls, model_name: str = os.getenv('MODEL_PATH') or os.getenv('MODEL_NAME', DEFAULT_MODEL)):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._initialize(model_name)
@@ -72,7 +79,7 @@ class VectorizationService:
                 logger.warning(f"Очень длинный текст ({len(text)} символов), возможны проблемы с памятью")
 
             logger.debug(f"Векторизация текста (длина: {len(text)} символов)")
-            vector = self.model.encode(text, show_progress_bar=False).tolist()
+            vector = self.model.encode(text, show_progress_bar=False, normalize_embeddings=True).tolist()
             logger.debug("Векторизация успешно завершена")
             return vector
 
@@ -146,6 +153,14 @@ class VectorizationService:
                 exc_info=True
             )
             raise VectorizationError("Ошибка пакетной векторизации") from e
+
+    def vectorize_query(self, text: str) -> List[float]:
+        """Эмбеддинг поискового запроса пользователя."""
+        return self.vectorize_text(QUERY_PREFIX + text)
+
+    def vectorize_passage(self, text: str) -> List[float]:
+        """Эмбеддинг индексируемого документа (препарата)."""
+        return self.vectorize_text(PASSAGE_PREFIX + text)
 
     def get_vector_size(self) -> int:
         """Возвращает размерность векторов модели"""

@@ -165,6 +165,11 @@ class DrugInfoAPI:
                     self.api_config[api_name]["enable_time"] = None
 
 
+    @property
+    def configured(self) -> bool:
+        """Есть ли хотя бы один провайдер с ключом."""
+        return any(c["api_key"] for c in self.api_config.values())
+
     def get_drug_info(self, drug_name: str) -> Optional[str]:
         """
         Основной метод для получения информации о лекарстве

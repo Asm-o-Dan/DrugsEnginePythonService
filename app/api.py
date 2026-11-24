@@ -20,7 +20,7 @@ COLLECTION = "drug_collection"
 
 
 class Vectorizer(Protocol):
-    def vectorize_text(self, text: str) -> list[float]: ...
+    def vectorize_query(self, text: str) -> list[float]: ...
 
 
 class VectorStore(Protocol):
@@ -67,7 +67,7 @@ def create_app(vectorizer: Vectorizer, store: VectorStore) -> FastAPI:
 
     @app.post("/v1/search", response_model=Hits)
     async def search(request: SearchRequest):
-        vector = await run_in_threadpool(vectorizer.vectorize_text, request.query.strip())
+        vector = await run_in_threadpool(vectorizer.vectorize_query, request.query.strip())
         results = await run_in_threadpool(store.search_vector, vector, COLLECTION, request.limit)
         if results is None:
             raise HTTPException(status_code=503, detail="Векторное хранилище недоступно")
@@ -90,7 +90,7 @@ def create_app(vectorizer: Vectorizer, store: VectorStore) -> FastAPI:
         return Document(
             id=point["id"],
             description=description,
-            descriptionSource=payload.get("description_source", "generated") if description else None,
+            descriptionSource=(payload.get("description_source") or "generated") if description else None,
         )
 
     return app

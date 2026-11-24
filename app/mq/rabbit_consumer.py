@@ -55,7 +55,7 @@ class RabbitMQConsumer:
             logger.debug(f"Обработка текста (длина: {len(text)} символов)")
 
             # Векторизация текста
-            vector = self.vector_service.vectorize_text(text)
+            vector = self.vector_service.vectorize_query(text)
             if not vector:
                 raise ValueError("Ошибка векторизации")
 
