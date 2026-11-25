@@ -1,6 +1,7 @@
 from confluent_kafka import Consumer, KafkaError, KafkaException, Message
 import json
 import logging
+import time
 from typing import Optional
 
 from app.Classes.classes import Drug
@@ -10,6 +11,22 @@ from app.services.vectorization_service import VectorizationService
 from app.services.gpt_service import DrugInfoAPI
 
 logger = logging.getLogger("KafkaConsumer")
+
+
+MAX_ATTEMPTS = 3
+
+
+class ConsumerStatus:
+    """Состояние потребителя для /health: «жив ли» и сколько обработано."""
+
+    def __init__(self):
+        self.running = False
+        self.processed = 0
+        self.skipped = 0
+        self.last_error: Optional[str] = None
+
+
+status = ConsumerStatus()
 
 
 class KafkaDrugConsumer:
@@ -67,7 +84,14 @@ class KafkaDrugConsumer:
         действующему веществу и форме, иначе поиск по смыслу был бы пуст.
         """
         try:
-            if self.api_service.configured:
+            # При переиндексации (переопубликовали каталог, сменили модель) не платим повторно за описание:
+            # берём уже полученное, если название не изменилось.
+            existing = self.qdrant_service.get_point(drug.id) if hasattr(self.qdrant_service, "get_point") else None
+            payload = (existing or {}).get("payload") or {}
+            if payload.get("description") and payload.get("name") == drug.name:
+                drug.description = payload["description"]
+                drug.description_source = payload.get("description_source") or "generated"
+            elif self.api_service.configured:
                 drug_info = self.api_service.get_drug_info(drug.name)
                 if drug_info:
                     drug.description = drug_info
@@ -92,34 +116,52 @@ class KafkaDrugConsumer:
             return False
 
     def run_consumption_loop(self):
-        """Основной цикл потребления сообщений"""
+        """
+        Основной цикл. Сбой отдельной итерации не останавливает потребителя. Сообщение, которое не удалось
+        обработать за MAX_ATTEMPTS попыток, явно пропускается (с записью в лог), а не теряется молча:
+        коммит более позднего смещения иначе неявно «подтвердил» бы и его.
+        """
         logger.info("Запуск consumer...")
-
+        status.running = True
         try:
             while True:
-                msg = self.consumer.poll(1.0)
+                try:
+                    msg = self.consumer.poll(1.0)
+                    if msg is None:
+                        continue
+                    if msg.error():
+                        self._handle_kafka_error(msg.error())
+                        continue
 
-                if msg is None:
-                    continue
-
-                if msg.error():
-                    self._handle_kafka_error(msg.error())
-                    continue
-
-                drug = self._parse_message(msg)
-                if not drug:
-                    continue
-
-                success = self._process_single_drug(drug)
-                if success:
+                    drug = self._parse_message(msg)
+                    if drug is None:
+                        logger.error(f"Некорректное сообщение пропущено (offset {msg.offset()})")
+                        status.skipped += 1
+                    elif self._process_with_retries(drug):
+                        status.processed += 1
+                    else:
+                        logger.error(f"Препарат {drug.id} ({drug.name}) не проиндексирован за {MAX_ATTEMPTS} попытки — пропущен")
+                        status.skipped += 1
                     self.consumer.commit(msg)
-
+                except KeyboardInterrupt:
+                    raise
+                except Exception as e:
+                    status.last_error = str(e)
+                    logger.error(f"Ошибка в цикле потребителя, продолжаем: {e}", exc_info=True)
+                    time.sleep(5)
         except KeyboardInterrupt:
             logger.info("Получен сигнал прерывания...")
-        except Exception as e:
-            logger.critical(f"Критическая ошибка: {e}", exc_info=True)
         finally:
+            status.running = False
             self._shutdown()
+
+    def _process_with_retries(self, drug: Drug) -> bool:
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            if self._process_single_drug(drug):
+                return True
+            if attempt < MAX_ATTEMPTS:
+                time.sleep(2 ** attempt)
+        return False
 
     def _handle_kafka_error(self, error):
         """Обработка ошибок Kafka"""

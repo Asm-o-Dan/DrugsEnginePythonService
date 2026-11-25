@@ -12,7 +12,7 @@ import uvicorn
 
 from app.api import create_app
 from app.config import QDRANT_HOST, QDRANT_PORT
-from app.mq.kafka_consumer import start_kafka_consumer
+from app.mq.kafka_consumer import start_kafka_consumer, status as consumer_status
 from app.mq.rabbit_consumer import start_rabbit_consumer
 from app.services.qdrant_service import QdrantService
 from app.services.vectorization_service import VectorizationService
@@ -40,13 +40,15 @@ def main():
     qdrant_service = QdrantService(QDRANT_HOST, QDRANT_PORT)
     qdrant_service.ensure_collection("drug_collection", vector_service.get_vector_size())
 
-    if os.getenv("KAFKA_ENABLED", "true").lower() == "true":
+    kafka_enabled = os.getenv("KAFKA_ENABLED", "true").lower() == "true"
+    if kafka_enabled:
         _run_forever("kafka-consumer", start_kafka_consumer, vector_service, qdrant_service)
     if os.getenv("RABBITMQ_ENABLED", "false").lower() == "true":
         _run_forever("rabbitmq-consumer", start_rabbit_consumer, vector_service, qdrant_service)
 
     uvicorn.run(
-        create_app(vector_service, qdrant_service),
+        create_app(vector_service, qdrant_service,
+                   consumer_alive=(lambda: consumer_status.running) if kafka_enabled else None),
         host="0.0.0.0",
         port=int(os.getenv("PORT", "8000")),
         log_level=os.getenv("LOG_LEVEL", "info").lower(),

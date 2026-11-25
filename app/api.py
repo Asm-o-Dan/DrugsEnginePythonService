@@ -1,7 +1,7 @@
 """
 HTTP API для .NET-бэкенда DrugsEngine (клиент — Infrastructure/SemanticSearch/SemanticSearchClient.cs).
 
-  GET  /health                          → {"status": "ok" | "degraded", "qdrant": bool}
+  GET  /health                          → {"status": "ok" | "degraded", "qdrant": bool, "consumer": bool | null}
   POST /v1/search {query, limit}        → {"items": [{"id", "score"}]}
   GET  /v1/drugs/{id}/similar?limit=N   → {"items": [{"id", "score"}]} | 404
   GET  /v1/drugs/{id}                   → {"id", "description", "descriptionSource"} | 404
@@ -57,13 +57,16 @@ def _parse_id(drug_id: str) -> str:
         raise HTTPException(status_code=404, detail="Некорректный id препарата")
 
 
-def create_app(vectorizer: Vectorizer, store: VectorStore) -> FastAPI:
+def create_app(vectorizer: Vectorizer, store: VectorStore, consumer_alive=None) -> FastAPI:
+    """consumer_alive — функция «жив ли потребитель Kafka»; None, если потребитель не запускается."""
     app = FastAPI(title="DrugsEngine Vector Search", version="1.0.0")
 
     @app.get("/health")
     async def health():
         qdrant_ok = await run_in_threadpool(store.health_check)
-        return {"status": "ok" if qdrant_ok else "degraded", "qdrant": qdrant_ok}
+        consumer_ok = consumer_alive() if consumer_alive else None
+        healthy = qdrant_ok and consumer_ok is not False
+        return {"status": "ok" if healthy else "degraded", "qdrant": qdrant_ok, "consumer": consumer_ok}
 
     @app.post("/v1/search", response_model=Hits)
     async def search(request: SearchRequest):

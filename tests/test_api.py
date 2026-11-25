@@ -78,5 +78,11 @@ def test_document_marks_generated_descriptions():
 
 
 def test_health_reports_degraded_qdrant():
-    assert client().get("/health").json() == {"status": "ok", "qdrant": True}
+    assert client().get("/health").json() == {"status": "ok", "qdrant": True, "consumer": None}
     assert client(FakeStore(available=False)).get("/health").json()["status"] == "degraded"
+
+
+def test_health_reports_dead_consumer():
+    app = create_app(FakeVectorizer(), FakeStore(), consumer_alive=lambda: False)
+    body = TestClient(app).get("/health").json()
+    assert body == {"status": "degraded", "qdrant": True, "consumer": False}
